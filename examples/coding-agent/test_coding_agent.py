@@ -23,6 +23,8 @@ suite is safe to run in CI.
 
 import json
 import os
+import sys
+import time
 
 import pytest
 import tools
@@ -158,6 +160,35 @@ def test_read_outside_the_workspace_is_refused():
 
 def test_write_outside_the_workspace_is_refused():
     assert "error" in tools.write_file("../escaped.txt", "nope")
+
+
+def test_write_file_rejects_non_string_without_truncating(workspace):
+    """A bad `contents` must not destroy the file that is already there."""
+    target = workspace / "keep.txt"
+    target.write_text("original")
+
+    result = tools.write_file("keep.txt", None)
+
+    assert "error" in result
+    assert target.read_text() == "original"
+
+
+def test_timeout_kills_child_processes(workspace, monkeypatch):
+    """A timed-out command must not leave a child that keeps writing."""
+    # The child outlives the timeout by design, then touches a marker. If only
+    # the shell were killed it would still land after the tool had already
+    # returned, which is exactly the bug this covers.
+    script = workspace.parent / "slow_writer.py"
+    script.write_text(
+        "import pathlib, time\ntime.sleep(5)\npathlib.Path('late.txt').write_text('late')\n"
+    )
+    monkeypatch.setattr(tools, "TIMEOUT_SECONDS", 1)
+
+    result = tools.run_bash(f'"{sys.executable}" "{script}"')
+
+    assert "timed out" in result["error"]
+    time.sleep(2)
+    assert not (workspace / "late.txt").exists()
 
 
 def test_symlink_out_of_the_workspace_is_refused(workspace, tmp_path):
